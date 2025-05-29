@@ -1,0 +1,11 @@
+transformers==4.40.1
+datasets==2.19.0
+evaluate==0.4.1
+scikit-learn==1.4.1
+tqdm==4.66.2
+torch==2.3.0
+tokenizers==0.19.1
+numpy==1.26.4
+accelerate==0.29.3
+protobuf==4.25.3
+sentencepiece==0.2.0
