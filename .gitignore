@@ -1,8 +1,10 @@
 # Ignore all mt5-detox folders and their contents
 Maria_code/mt5-detox*/
 Json Results/
-pan-code/
 pan25-detox-env/
+pan-code/
+detox-eval-env/
+detox-eval-env*/
 pan25-detox-env*/
 Maria_code/baseline_backtranslation/pan25-detox-env/Lib/site-packages/decorator.py
 Maria_code/baseline_backtranslation/pan25-detox-env/Lib/site-packages/ipykernel_launcher.py

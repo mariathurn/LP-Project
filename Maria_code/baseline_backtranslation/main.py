@@ -94,13 +94,17 @@ class BackTranslationBaseline:
             self.detox_model_name
         )
         self.detox_model = self.detox_model.eval().to(self.device)
-        self.detox_tokenizer = BartTokenizerFast.from_pretrained(self.detox_model_name)
+        self.detox_tokenizer = BartTokenizerFast.from_pretrained(
+            self.detox_model_name)
 
         # Initialize Hinglish model
-        print(f"Loading Hinglish translation model ({self.hinglish_model_name})...")
-        self.hin_model = AutoModelForCausalLM.from_pretrained(self.hinglish_model_name)
+        print(
+            f"Loading Hinglish translation model ({self.hinglish_model_name})...")
+        self.hin_model = AutoModelForCausalLM.from_pretrained(
+            self.hinglish_model_name)
         self.hin_model = self.hin_model.eval().to(self.device)
-        self.hin_tokenizer = AutoTokenizer.from_pretrained(self.hinglish_model_name)
+        self.hin_tokenizer = AutoTokenizer.from_pretrained(
+            self.hinglish_model_name)
         self.hin_template = "Hinglish:\n{hi_en}\n\nEnglish:\n{en}"
         self.en_to_hin_template = "English:\n{en}\n\nHinglish:\n{hi_en}"
 
@@ -132,10 +136,11 @@ class BackTranslationBaseline:
         translations = []
         iterator = range(0, len(texts), batch_size)
         if verbose:
-            iterator = tqdm(iterator, desc=f"Translating {src_lang}→{tgt_lang}")
+            iterator = tqdm(
+                iterator, desc=f"Translating {src_lang}→{tgt_lang}")
 
         for i in iterator:
-            batch = texts[i : i + batch_size]
+            batch = texts[i: i + batch_size]
             tokenized = self.translation_tokenizer(
                 batch,
                 return_tensors="pt",
@@ -180,14 +185,15 @@ class BackTranslationBaseline:
             iterator = tqdm(iterator, desc="Detoxifying")
 
         for i in iterator:
-            batch = texts[i : i + batch_size]
+            batch = texts[i: i + batch_size]
             tokenized = self.detox_tokenizer(
                 batch, return_tensors="pt", padding=True, truncation=True
             ).to(self.device)
 
             outputs = self.detox_model.generate(**tokenized)
             detoxified.extend(
-                self.detox_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                self.detox_tokenizer.batch_decode(
+                    outputs, skip_special_tokens=True)
             )
         return detoxified
 
@@ -238,7 +244,7 @@ class BackTranslationBaseline:
                     input_ids=input_ids, **generation_kwargs
                 )
                 decoded = self.hin_tokenizer.batch_decode(
-                    outputs[:, input_ids.shape[1] :], skip_special_tokens=True
+                    outputs[:, input_ids.shape[1]:], skip_special_tokens=True
                 )
                 generated.extend(decoded)
         return generated
