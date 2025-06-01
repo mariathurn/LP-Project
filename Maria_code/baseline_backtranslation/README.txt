@@ -9,3 +9,17 @@
 >>   --batch_size 4 `
 >>   --device cuda `
 >>   --verbose True
+
+python .\main-refined.py `     
+--input_path .\paradetox_en.tsv ` 
+--output_path .\refined_output_en.tsv `     
+--batch_size 4 `
+--device cuda `
+--verbose True
+
+python .\main-refined.py `
+  --input_path .\paradetox_en.tsv `
+  --output_path .\refined_output_en.tsv `
+  --batch_size 4 `
+  --device cuda `
+  --verbose True

@@ -11,7 +11,8 @@ class ToxicityConfig(BaseModel):
     """Configuration for toxicity measurement"""
 
     tox_model_name: str = "textdetox/xlmr-large-toxicity-classifier-v2"
-    tokenizer_name: str = "cardiffnlp/twitter-xlm-roberta-large-2022"
+    # ✅ Match tokenizer with model
+    tokenizer_name: str = "textdetox/xlmr-large-toxicity-classifier-v2"
     target_label: int = 0  # 1 is toxic, 0 is neutral
     batch_size: int = 32
     max_length: int = 512
@@ -40,7 +41,8 @@ class ToxicityMeasurement:
             .to(self.config.device)
             .eval()
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.config.tokenizer_name, use_fast=False)
 
     def classify_texts(
         self,
@@ -60,7 +62,7 @@ class ToxicityMeasurement:
         res = []
 
         for i in trange(0, len(texts), self.config.batch_size, desc=desc):
-            batch_texts = texts[i : i + self.config.batch_size]
+            batch_texts = texts[i: i + self.config.batch_size]
 
             try:
                 # Tokenize batch
@@ -89,7 +91,8 @@ class ToxicityMeasurement:
 
             except Exception as e:
                 # Log error and return zeros for failed batch
-                print(f"Error processing batch {i//self.config.batch_size}: {str(e)}")
+                print(
+                    f"Error processing batch {i//self.config.batch_size}: {str(e)}")
                 res.extend([0.0] * len(batch_texts))
 
         return res

@@ -12,10 +12,6 @@ from transformers.models.deberta_v2.modeling_deberta_v2 import DebertaV2Layer
 
 
 class DebertaV2LayerPatched(DebertaV2Layer):
-    """
-    Just like DeBERTaV2Layer, but handles the situation when attention_mask=None by creating a trivial attention mask of all ones.
-    """
-
     def forward(
         self,
         hidden_states,
@@ -25,13 +21,13 @@ class DebertaV2LayerPatched(DebertaV2Layer):
         rel_embeddings=None,
         output_attentions=False,
     ):
-        # Handling empty attention_mask:
+        # Ensure attention_mask is set
         if attention_mask is None:
-            attention_mask = torch.ones(*hidden_states.shape[:-1]).to(
-                hidden_states.device
+            attention_mask = torch.ones(
+                *hidden_states.shape[:-1], dtype=torch.long, device=hidden_states.device
             )
 
-        # Everything else is the same:
+        # Compute attention
         attention_output = self.attention(
             hidden_states,
             attention_mask,
@@ -40,22 +36,25 @@ class DebertaV2LayerPatched(DebertaV2Layer):
             relative_pos=relative_pos,
             rel_embeddings=rel_embeddings,
         )
-        if output_attentions:
-            attention_output, att_matrix = attention_output
+
+        # Unpack attention_output if needed
+        if isinstance(attention_output, tuple):
+            attention_output, attn_weights = attention_output
+        else:
+            attn_weights = None
+
+        # Continue forward pass
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
-        if output_attentions:
-            return (layer_output, att_matrix)
-        else:
-            return layer_output
+
+        return (layer_output, attn_weights) if output_attentions else layer_output
 
 
 class DeBERTaEncoder(BERTEncoder):
-    def __init__(
-        self, pretrained_model: str, load_pretrained_weights: bool = True
-    ) -> None:
-        super(Encoder, self).__init__()
-        self.tokenizer = tr.AutoTokenizer.from_pretrained(pretrained_model)
+    def __init__(self, pretrained_model: str, load_pretrained_weights: bool = True) -> None:
+        nn.Module.__init__(self)
+        self.tokenizer = tr.AutoTokenizer.from_pretrained(
+            pretrained_model, use_fast=False)
         if load_pretrained_weights:
             self.model = tr.AutoModel.from_pretrained(pretrained_model)
         else:
@@ -66,7 +65,8 @@ class DeBERTaEncoder(BERTEncoder):
 
         self.model.encoder.layer = nn.ModuleList(
             [
-                DebertaV2LayerPatched(tr.AutoConfig.from_pretrained(pretrained_model))
+                DebertaV2LayerPatched(
+                    tr.AutoConfig.from_pretrained(pretrained_model))
                 for _ in range(self.model.config.num_hidden_layers)
             ]
         )
