@@ -1,7 +1,9 @@
 import argparse
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Tuple, Optional
+import json
+
 import pandas as pd
 import torch
 from tqdm.auto import tqdm
@@ -11,9 +13,8 @@ from transformers import (
     BartForConditionalGeneration,
     BartTokenizerFast,
 )
-import csv
-import json
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
 FILE_PATH: str = Path(__file__).resolve()
 INPUT_DATA_PATH: str = Path(FILE_PATH.parent.parent.parent, "input_data")
@@ -22,39 +23,17 @@ OUTPUT_DATA_PATH: str = Path(FILE_PATH.parent.parent.parent, "output_data")
 os.makedirs(OUTPUT_DATA_PATH, exist_ok=True)
 
 
-def convert_tsv_to_json(tsv_path: str, json_path: str):
-    data = []
-    with open(tsv_path, "r", encoding="utf-8") as tsv_file:
-        reader = csv.DictReader(tsv_file, delimiter="\t")
-        for row in reader:
-            entry = {
-                "input_text": row.get("toxic_sentence", ""),
-                "target_text": row.get("neutral_sentence", "")
-            }
-            data.append(entry)
-
-    with open(json_path, "w", encoding="utf-8") as json_file:
-        json.dump(data, json_file, indent=2, ensure_ascii=False)
-
-    print(f"Converted {len(data)} entries to JSON format.")
-
-
 class BackTranslationBaseline:
     def __init__(
         self,
         device: str = "cuda",
-        translation_model_name: str = "facebook/nllb-200-3.3B",
+        translation_model_name: str = "facebook/nllb-200-distilled-600M",  # Use smaller model
         detox_model_name: str = "s-nlp/bart-base-detox",
-        similarity_threshold: float = 0.7,
-        save_dropped_path: str = None
+        similarity_threshold: float = 0.75
     ):
         self.device = (
             device if torch.cuda.is_available() and device == "cuda" else "cpu"
         )
-        self.similarity_threshold = similarity_threshold
-        self.save_dropped_path = save_dropped_path
-        self.sim_model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.dropped = []
 
         self.lang_id_mapping = {
             "ru": "rus_Cyrl",
@@ -74,36 +53,24 @@ class BackTranslationBaseline:
         }
 
         print(f"Loading translation model ({translation_model_name})...")
-        self.translation_tokenizer = AutoTokenizer.from_pretrained(translation_model_name)
-        self.translation_model = AutoModelForSeq2SeqLM.from_pretrained(translation_model_name)
+        self.translation_tokenizer = AutoTokenizer.from_pretrained(
+            translation_model_name)
+        self.translation_model = AutoModelForSeq2SeqLM.from_pretrained(
+            translation_model_name)
         self.translation_model = self.translation_model.eval().to(self.device)
 
         print(f"Loading detoxification model ({detox_model_name})...")
-        self.detox_model = BartForConditionalGeneration.from_pretrained(detox_model_name)
+        self.detox_model = BartForConditionalGeneration.from_pretrained(
+            detox_model_name)
         self.detox_model = self.detox_model.eval().to(self.device)
-        self.detox_tokenizer = BartTokenizerFast.from_pretrained(detox_model_name)
+        self.detox_tokenizer = BartTokenizerFast.from_pretrained(
+            detox_model_name)
 
-    def is_similar(self, a: str, b: str) -> bool:
-        emb1 = self.sim_model.encode(a, convert_to_tensor=True)
-        emb2 = self.sim_model.encode(b, convert_to_tensor=True)
-        return util.cos_sim(emb1, emb2).item() > self.similarity_threshold
-
-    def filter_by_similarity(self, inputs: List[str], outputs: List[str]) -> List[str]:
-        filtered = []
-        for inp, out in zip(inputs, outputs):
-            if self.is_similar(inp, out):
-                filtered.append(out)
-            else:
-                filtered.append("")
-                if self.save_dropped_path is not None:
-                    self.dropped.append({"input": inp, "output": out})
-        return filtered
-
-    def save_dropped(self):
-        if self.save_dropped_path and self.dropped:
-            with open(self.save_dropped_path, "w", encoding="utf-8") as f:
-                json.dump(self.dropped, f, indent=2, ensure_ascii=False)
-            print(f"Saved {len(self.dropped)} dropped examples to {self.save_dropped_path}")
+        # Add similarity model
+        print("Loading sentence similarity model...")
+        self.similarity_model = SentenceTransformer(
+            'all-MiniLM-L6-v2').to(self.device)
+        self.similarity_threshold = similarity_threshold
 
     def translate_batch(self, texts: List[str], src_lang: str, tgt_lang: str, batch_size: int = 32, max_length: int = 128, verbose: bool = True) -> List[str]:
         self.translation_tokenizer.src_lang = self.lang_id_mapping[src_lang]
@@ -112,7 +79,8 @@ class BackTranslationBaseline:
         translations = []
         iterator = range(0, len(texts), batch_size)
         if verbose:
-            iterator = tqdm(iterator, desc=f"Translating {src_lang}→{tgt_lang}")
+            iterator = tqdm(
+                iterator, desc=f"Translating {src_lang}→{tgt_lang}")
 
         for i in iterator:
             batch = texts[i: i + batch_size]
@@ -122,13 +90,10 @@ class BackTranslationBaseline:
                 **tokenized,
                 forced_bos_token_id=self.translation_tokenizer.lang_code_to_id[
                     self.translation_tokenizer.tgt_lang],
-                max_new_tokens=max_length,
-                no_repeat_ngram_size=3,
-                length_penalty=1.0,
-                num_beams=4,
-                early_stopping=True,
+                max_new_tokens=max_length
             )
-            translations.extend(self.translation_tokenizer.batch_decode(outputs, skip_special_tokens=True))
+            translations.extend(self.translation_tokenizer.batch_decode(
+                outputs, skip_special_tokens=True))
         return translations
 
     def detoxify_batch(self, texts: List[str], batch_size: int = 32, verbose: bool = True) -> List[str]:
@@ -143,21 +108,68 @@ class BackTranslationBaseline:
                 batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
             outputs = self.detox_model.generate(
                 **tokenized,
-                max_new_tokens=128,
-                no_repeat_ngram_size=3,
-                length_penalty=1.0,
-                num_beams=4,
-                early_stopping=True,
+                do_sample=True,
+                top_p=0.9,  # Nucleus sampling
+                temperature=0.8,
+                max_new_tokens=128
             )
-            detoxified.extend(self.detox_tokenizer.batch_decode(outputs, skip_special_tokens=True))
+            detoxified.extend(self.detox_tokenizer.batch_decode(
+                outputs, skip_special_tokens=True))
         return detoxified
+
+    def compute_similarity(self, source_texts: List[str], target_texts: List[str]) -> List[float]:
+        """Compute semantic similarity between source and target sentences."""
+        source_embeddings = self.similarity_model.encode(
+            source_texts, convert_to_tensor=True)
+        target_embeddings = self.similarity_model.encode(
+            target_texts, convert_to_tensor=True)
+
+        # Compute cosine similarity
+        similarities = []
+        for i in range(len(source_texts)):
+            similarity = torch.nn.functional.cosine_similarity(
+                source_embeddings[i].unsqueeze(0),
+                target_embeddings[i].unsqueeze(0)
+            ).item()
+            similarities.append(similarity)
+
+        return similarities
+
+    def filter_detoxified_texts(self, original_texts: List[str], detoxified_texts: List[str],
+                                save_dropped_path: Optional[str] = None) -> Tuple[List[str], List[int]]:
+        """Filter detoxified texts based on similarity threshold."""
+        similarities = self.compute_similarity(
+            original_texts, detoxified_texts)
+
+        filtered_texts = []
+        kept_indices = []
+        dropped = {"original": [], "detoxified": [], "similarity": []}
+
+        for i, (orig, detox, sim) in enumerate(zip(original_texts, detoxified_texts, similarities)):
+            if sim >= self.similarity_threshold:
+                filtered_texts.append(detox)
+                kept_indices.append(i)
+            else:
+                # Keep original text if similarity is too low
+                filtered_texts.append(orig)
+                dropped["original"].append(orig)
+                dropped["detoxified"].append(detox)
+                dropped["similarity"].append(sim)
+
+        # Save dropped examples if requested
+        if save_dropped_path and dropped["original"]:
+            with open(save_dropped_path, 'w', encoding='utf-8') as f:
+                json.dump(dropped, f, ensure_ascii=False, indent=2)
+
+        return filtered_texts, kept_indices
 
     def process_dataset(
         self,
         input_path: str,
         output_path: str,
         batch_size: int = 64,
-        verbose: bool = True
+        verbose: bool = True,
+        save_dropped_path: Optional[str] = None
     ):
         print(f"Loading data from {input_path}...")
         data = pd.read_csv(input_path, sep="\t")
@@ -179,19 +191,36 @@ class BackTranslationBaseline:
             if lang == "ru":
                 continue
             if translations[lang]:
-                raw = self.detoxify_batch(translations[lang], batch_size=batch_size, verbose=verbose)
-                detoxified[lang] = self.filter_by_similarity(translations[lang], raw)
+                detoxified[lang] = self.detoxify_batch(
+                    translations[lang], batch_size=batch_size, verbose=verbose)
+
+        filtered_detoxified = {lang: [] for lang in detoxified}
+        for lang in tqdm(detoxified, desc="Filtering by similarity", disable=not verbose):
+            if not detoxified.get(lang) or lang == "ru":
+                continue
+
+            # Get original texts for comparison
+            original_texts = translations[lang]
+            detox_texts = detoxified[lang]
+
+            # Apply similarity filtering
+            filtered_texts, _ = self.filter_detoxified_texts(
+                original_texts,
+                detox_texts,
+                save_dropped_path=save_dropped_path if lang == "en" else None
+            )
+
+            filtered_detoxified[lang] = filtered_texts
 
         backtranslations = {lang: [] for lang in self.lang_id_mapping}
         for lang in tqdm(self.lang_id_mapping, desc="Backtranslating", disable=not verbose):
-            if not detoxified.get(lang):
+            if not filtered_detoxified.get(lang):
                 continue
             if lang == "en":
-                backtranslations[lang] = detoxified[lang]
+                backtranslations[lang] = filtered_detoxified[lang]
             else:
-                raw_bt = self.translate_batch(
-                    detoxified[lang], src_lang="en", tgt_lang=lang, batch_size=batch_size, verbose=verbose)
-                backtranslations[lang] = self.filter_by_similarity(translations[lang], raw_bt)
+                backtranslations[lang] = self.translate_batch(
+                    filtered_detoxified[lang], src_lang="en", tgt_lang=lang, batch_size=batch_size, verbose=verbose)
 
         print(f"Saving results to {output_path}...")
         os.makedirs(output_path.parent, exist_ok=True)
@@ -210,8 +239,6 @@ class BackTranslationBaseline:
         data["neutral_sentence"] = neutral_sentences
         data.to_csv(output_path, sep="\t", index=False)
 
-        self.save_dropped()
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -221,12 +248,14 @@ def parse_args():
     parser.add_argument("--output_path", type=str,
                         default=Path(OUTPUT_DATA_PATH, "baseline_backtranslation_dev.tsv"))
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--max_length", type=int, default=128)
+    parser.add_argument("--save_dropped_path", type=str, default=None,
+                        help="Path to save examples that didn't meet similarity threshold")
+    parser.add_argument("--similarity_threshold", type=float, default=0.75,
+                        help="Threshold for semantic similarity filtering")
+    parser.add_argument("--verbose", type=bool, default=True)
     parser.add_argument("--device", type=str,
                         choices=["cuda", "cpu"], default="cuda")
-    parser.add_argument("--similarity_threshold", type=float, default=0.7)
-    parser.add_argument("--save_dropped_path", type=str, default=None)
-    parser.add_argument("--verbose", type=bool)
+    parser.add_argument("--max_length", type=int, default=128)
     return parser.parse_args()
 
 
@@ -235,8 +264,8 @@ if __name__ == "__main__":
     print("Initializing backtranslation pipeline...")
     pipeline = BackTranslationBaseline(
         device=args.device,
-        similarity_threshold=args.similarity_threshold,
-        save_dropped_path=args.save_dropped_path
+        translation_model_name="facebook/nllb-200-distilled-600M",  # Use smaller model
+        similarity_threshold=args.similarity_threshold
     )
     print("Processing dataset...")
     pipeline.process_dataset(
@@ -244,4 +273,5 @@ if __name__ == "__main__":
         output_path=args.output_path,
         batch_size=args.batch_size,
         verbose=args.verbose,
+        save_dropped_path=args.save_dropped_path
     )
